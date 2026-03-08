@@ -110,14 +110,17 @@ def filtr_1(
         raise ValueError("Parametr 'low_var_q' musi należeć do przedziału [0, 1].")
 
     use_channels = [c for c in channels if c in df.columns]
+    
     if not use_channels:
         raise ValueError("Nie znaleziono żadnych kanałów z listy 'channels' w df.")
 
+    # tutaj ddof = 0, bo nie mamy próby z jakiejś populacji i nie estymujemy parametrów tej populacji
     chan_var = df.groupby("ID")[use_channels].var(ddof=0).median()
 
     var_cut = chan_var.quantile(low_var_q)
 
     keep_set = set(chan_var[chan_var >= var_cut].index)
+
     keep = [c for c in channels if c in keep_set]
 
     base_cols = [c for c in ["ID", "Class"] if c in df.columns]
@@ -262,7 +265,6 @@ def build_features(df, channels, fs=128):
         for ch in channels:
 
             series = session_data[ch].to_numpy()
-            row[f'{ch}_mean'] = np.mean(series)
             row[f'{ch}_std'] = np.std(series)
             row[f'{ch}_skew'] = pd.Series(series).skew()
             row[f'{ch}_kurt'] = pd.Series(series).kurtosis()
