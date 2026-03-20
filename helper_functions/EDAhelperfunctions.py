@@ -331,7 +331,7 @@ def draw_plot(df: pd.DataFrame, feature: str) -> None:
 
 def drop_highly_correlated_features(
     features_df: pd.DataFrame,
-    corr_threshold: float = 0.75,
+    corr_threshold: float = 0.8,
     id_col: str = "ID",
     target_col: str = "Class",
 ) -> pd.DataFrame:
