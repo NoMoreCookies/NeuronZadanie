@@ -1,11 +1,10 @@
+# IMPORTY
 import pandas as pd
 import numpy as np
-from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.signal import find_peaks
 from scipy.stats import mannwhitneyu
-import kagglehub
 import statsmodels.stats.multitest as smm
 import pandas as pd
 from scipy.stats import mannwhitneyu
@@ -15,11 +14,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.patches import Patch
 
-
+# FUNKCJA DO RYSOWANIA WYKRESÓW
 def visualize_signals(
     df: pd.DataFrame,
     id_value: str,
-    channels: list[str],
     fs: int,
     seconds: int = 120,
     offset: float = 500,
@@ -41,13 +39,10 @@ def visualize_signals(
         ValueError: Gdy nie znaleziono danych dla podanego ID lub `seconds <= 0`.
         KeyError: Gdy brakuje wymaganych kanałów w ramce danych.
     """
-    if seconds <= 0:
-        raise ValueError("Parametr 'seconds' musi być dodatni.")
-
-    missing_channels = [ch for ch in channels if ch not in df.columns]
     
-    if missing_channels:
-        raise KeyError(f"Brakujące kanały w df: {missing_channels}")
+    numeric_cols = df.columns[:-2]
+
+    channels = list(numeric_cols)
 
     signal_df = (
         df.loc[df["ID"] == id_value, channels]
@@ -76,7 +71,7 @@ def visualize_signals(
     fig.tight_layout()
     plt.show()
 
-
+# FILTR 1
 def filtr_1(
     df: pd.DataFrame,
     channels: list[str],
@@ -103,19 +98,17 @@ def filtr_1(
         ValueError: Gdy `low_var_q` nie należy do przedziału [0, 1]
             albo gdy nie znaleziono żadnego poprawnego kanału.
     """
-    if "ID" not in df.columns:
-        raise KeyError("W ramce danych brakuje kolumny 'ID'.")
 
     if not 0 <= low_var_q <= 1:
         raise ValueError("Parametr 'low_var_q' musi należeć do przedziału [0, 1].")
 
-    use_channels = [c for c in channels if c in df.columns]
+    channels = [c for c in channels if c in df.columns]
     
-    if not use_channels:
+    if not channels:
         raise ValueError("Nie znaleziono żadnych kanałów z listy 'channels' w df.")
 
-    # tutaj ddof = 0, bo nie mamy próby z jakiejś populacji i nie estymujemy parametrów tej populacji
-    chan_var = df.groupby("ID")[use_channels].var(ddof=0).median()
+    # tutaj ddof = 0, bo mamy całą populację
+    chan_var = df.groupby("ID")[channels].var(ddof=0).quantile(0.7)
 
     var_cut = chan_var.quantile(low_var_q)
 
@@ -126,18 +119,17 @@ def filtr_1(
     base_cols = [c for c in ["ID", "Class"] if c in df.columns]
     return df[base_cols + keep]
 
-
+# FILTR 2
 def filtr_2(
     df: pd.DataFrame,
     channels: list[str] | None = None,
     high_corr: float = 0.7,
-    std_thresh: float = 0.2,
-    top_k: int = 20,
+    std_thresh: float = 0.2
 ) -> pd.DataFrame:
     """Usuwa redundantne kanały na podstawie korelacji liczonej osobno dla każdego ID.
 
     Funkcja najpierw wyznacza kolejność kanałów metodą zachłanną na podstawie
-    mediany wariancji w grupach `ID` (od największej do najmniejszej). Następnie
+    kwantylu 0.7 wariancji w grupach `ID` (od największej do najmniejszej). Następnie
     dla każdego `ID` liczy macierz korelacji między kanałami, a potem dla każdej
     pary kanałów oblicza średnią korelację i odchylenie standardowe po wszystkich
     identyfikatorach. Jeśli para kanałów ma wysoką średnią korelację oraz niskie
@@ -152,56 +144,37 @@ def filtr_2(
             para kanałów jest uznawana za silnie skorelowaną.
         std_thresh: Maksymalne dopuszczalne odchylenie standardowe korelacji
             po `ID`, poniżej którego zależność uznawana jest za stabilną.
-        top_k: Maksymalna liczba kanałów pozostawionych po filtracji.
+
 
     Returns:
         DataFrame zawierający kolumny bazowe (`ID`, `Class`, jeśli istnieją)
         oraz kanały wybrane po usunięciu redundancji.
 
-    Raises:
-        KeyError: Gdy w `df` brakuje kolumny `ID`.
-        ValueError: Gdy parametry wejściowe mają niepoprawne wartości albo
-            nie znaleziono żadnych poprawnych kanałów.
+
     """
-    if "ID" not in df.columns:
-        raise KeyError("W ramce danych brakuje kolumny 'ID'.")
-
-    if not 0 <= high_corr <= 1:
-        raise ValueError("Parametr 'high_corr' musi należeć do przedziału [0, 1].")
-
-    if std_thresh < 0:
-        raise ValueError("Parametr 'std_thresh' nie może być ujemny.")
-
-    if top_k <= 0:
-        raise ValueError("Parametr 'top_k' musi być dodatni.")
-
-    if channels is None:
-        channels = [c for c in df.columns if c not in ["ID", "Class"]]
-
-    use_channels = [c for c in channels if c in df.columns]
-    if not use_channels:
-        raise ValueError("Nie znaleziono żadnych kanałów z listy 'channels' w df.")
+    
+    channels = [c for c in df.columns if c not in ["ID", "Class"]]
 
     # Kolejność greedy: od największej mediany wariancji po ID.
-    chan_var = df.groupby("ID")[use_channels].var(ddof=0).median().sort_values(ascending=False)
+    chan_var = df.groupby("ID")[channels].var(ddof=0).quantile(0.7).sort_values(ascending=False)
     chan_order = chan_var.index.tolist()
 
     # Korelacja osobno dla każdego ID.
-    corr_obj = df.groupby("ID")[use_channels].apply(lambda x: x.corr())
+    corr_obj = df.groupby("ID")[channels].apply(lambda x: x.corr())
     corr_per_id = corr_obj.stack()
 
     # Średnia i odchylenie standardowe korelacji dla każdej pary kanałów po ID.
     mean_corr = corr_per_id.groupby(level=[1, 2]).mean()
     std_corr = corr_per_id.groupby(level=[1, 2]).std()
 
-    mean_corr_mat = mean_corr.unstack().reindex(index=use_channels, columns=use_channels)
-    std_corr_mat = std_corr.unstack().reindex(index=use_channels, columns=use_channels)
+    mean_corr_mat = mean_corr.unstack().reindex(index=channels, columns=channels)
+    std_corr_mat = std_corr.unstack().reindex(index=channels, columns=channels)
 
     # Maska stabilnej wysokiej korelacji.
     stable_mask = (mean_corr_mat.abs() >= high_corr) & (std_corr_mat <= std_thresh)
     stable_mask = stable_mask.fillna(False)
 
-    # Przekątna nie oznacza redundancji.
+    # Ominięcie przekątnej
     common = stable_mask.index.intersection(stable_mask.columns)
     for ch in common:
         stable_mask.loc[ch, ch] = False
@@ -217,78 +190,68 @@ def filtr_2(
         redundant = stable_mask.columns[stable_mask.loc[ch]].tolist()
         removed.update(redundant)
 
-    kept = kept[: min(top_k, len(kept))]
+    kept = kept[: len(kept)]
 
     base_cols = [c for c in ["ID", "Class"] if c in df.columns]
     return df[base_cols + kept]
 
+# DODANIE WSKAŹNIKÓW
+def build_features(df, fs=128):
+    """Buduje wektor cech dla każdej sesji (`ID`) na podstawie sygnałów kanałów."""
 
-def build_features(df, channels, fs=128): 
-    """Buduje wektor cech dla każdej sesji (`ID`) na podstawie sygnałów kanałów.
 
-    Funkcja grupuje dane po identyfikatorze `ID`, a następnie dla każdego
-    kanału wyznacza zestaw cech statystycznych, czasowych i widmowych.
-    Do cech należą m.in. średnia, odchylenie standardowe, skośność,
-    kurtoza, RMS, energia, liczba pików, moc w podstawowych pasmach EEG
-    oraz entropia widmowa. Wynikiem jest nowa ramka danych, w której
-    każdy wiersz odpowiada jednej sesji.
+    channels = df.columns[2:]
 
-    Args:
-        df: Ramka danych zawierająca kolumny `ID`, `Class` oraz kolumny
-            sygnałowe dla poszczególnych kanałów.
-        channels: Lista nazw kanałów, dla których mają zostać obliczone cechy.
-        fs: Częstotliwość próbkowania sygnału w Hz. Domyślnie 128.
-
-    Returns:
-        DataFrame, w którym każdy wiersz odpowiada jednej grupie `ID`
-        i zawiera:
-        - kolumny identyfikacyjne (`ID`, `Class`, `duration`),
-        - cechy statystyczne dla każdego kanału,
-        - cechy widmowe w pasmach delta, theta, alpha i beta,
-        - entropię widmową.
-
-    Raises:
-        KeyError: Gdy w `df` brakuje wymaganych kolumn, np. `ID`, `Class`
-            lub któregoś z kanałów z listy `channels`.
-        ValueError: Gdy częstotliwość próbkowania `fs` jest niedodatnia.
-    """
     features = []
 
-    for id_val, session_data in df.groupby('ID'):
-
-        class_val = session_data['Class'].iloc[0]
-
+    for id_val, session_data in df.groupby("ID"):
+        class_val = session_data["Class"].iloc[0]
         duration = len(session_data) / fs
 
-        row = {'ID': id_val, 'Class': class_val, 'duration': duration}
+        row = {"ID": id_val, "Class": class_val, "duration": duration}
 
         for ch in channels:
-
             series = session_data[ch].to_numpy()
-            row[f'{ch}_std'] = np.std(series)
-            row[f'{ch}_skew'] = pd.Series(series).skew()
-            row[f'{ch}_kurt'] = pd.Series(series).kurtosis()
-            row[f'{ch}_rms'] = np.sqrt(np.mean(series**2))
-            row[f'{ch}_energy'] = np.sum(series**2)
+
+            row[f"{ch}_mean"] = np.mean(series)
+            row[f"{ch}_std"] = np.std(series)
+            row[f"{ch}_skew"] = pd.Series(series).skew()
+            row[f"{ch}_kurt"] = pd.Series(series).kurtosis()
+            row[f"{ch}_rms"] = np.sqrt(np.mean(series ** 2))
+            row[f"{ch}_energy"] = np.sum(series ** 2)
+
             peaks, _ = find_peaks(series)
-            row[f'{ch}_peaks'] = len(peaks)
+            row[f"{ch}_peaks"] = len(peaks)
+
             fft = np.fft.fft(series)
-            power = np.abs(fft)**2
-            freqs = np.fft.fftfreq(len(series), d=1/fs)
+            power = np.abs(fft) ** 2
+            freqs = np.fft.fftfreq(len(series), d=1 / fs)
 
-            for band, (low, high) in [('delta', (0,4)), ('theta', (4,8)), ('alpha', (8,12)), ('beta', (12,30))]:
+            total_power = np.sum(power)
+            if total_power == 0:
+                total_power = 1e-10
+
+            bands = {
+                "delta": (0, 4),
+                "theta": (4, 8),
+                "alpha": (8, 12),
+                "beta": (12, 30),
+            }
+
+            for band, (low, high) in bands.items():
                 mask = (freqs >= low) & (freqs < high)
-                row[f'{ch}_{band}_power'] = np.sum(power[mask]) / np.sum(power)
+                row[f"{ch}_{band}_power"] = np.sum(power[mask]) / total_power
 
-            power_norm = power / np.sum(power)
+            power_norm = power / total_power
+            row[f"{ch}_spectral_entropy"] = -np.sum(
+                power_norm * np.log2(power_norm + 1e-10)
+            )
 
-            row[f'{ch}_spectral_entropy'] = -np.sum(power_norm * np.log2(power_norm + 1e-10))
-            
         features.append(row)
 
     return pd.DataFrame(features)
 
-
+# TABELA PRZYDATNYCH WSKAŹNIKÓW
 def rank_features_mannwhitney(
     features_df: pd.DataFrame,
     class_col: str = "Class",
@@ -342,32 +305,22 @@ def rank_features_mannwhitney(
         >>> results_df = rank_features_mannwhitney(features_df)
         >>> print(results_df.head())
     """
-    required_cols = {class_col, id_col}
-    missing_cols = required_cols - set(features_df.columns)
-    if missing_cols:
-        raise ValueError(f"Brakuje kolumn: {sorted(missing_cols)}")
 
     classes_present = set(features_df[class_col].unique())
-    if positive_class not in classes_present or negative_class not in classes_present:
-        raise ValueError(
-            f"W kolumnie '{class_col}' muszą występować klasy "
-            f"'{positive_class}' i '{negative_class}'."
-        )
 
     positive_data = features_df[features_df[class_col] == positive_class]
+
     negative_data = features_df[features_df[class_col] == negative_class]
 
     results = []
+
     feature_cols = features_df.columns.difference([id_col, class_col])
 
     for col in feature_cols:
-        # Pobranie wartości cechy dla obu klas.
-        x = positive_data[col].dropna()
-        y = negative_data[col].dropna()
 
-        # Pominięcie cech bez danych w jednej z grup.
-        if len(x) == 0 or len(y) == 0:
-            continue
+        # Pobranie wartości cechy dla obu klas.
+        x = positive_data[col]
+        y = negative_data[col]
 
         # Test Manna-Whitneya dla różnicy między grupami.
         u_stat, p_val = mannwhitneyu(x, y, alternative="two-sided")
@@ -400,9 +353,6 @@ def rank_features_mannwhitney(
 
     results_df = pd.DataFrame(results)
 
-    if results_df.empty:
-        return results_df
-
     # Korekta wielokrotnego testowania.
     results_df["p_adj"] = multipletests(
         results_df["p_value"],
@@ -417,7 +367,7 @@ def rank_features_mannwhitney(
 
     return results_df
 
-
+# PRZEFILTROWANE WSKAŹNIKI
 def filter_features_by_statistics(
         
     features_df: pd.DataFrame,
@@ -426,10 +376,10 @@ def filter_features_by_statistics(
     class_col: str = "Class",
     p_adj_threshold: float = 0.10,
     effect_size_threshold: float = 0.20,
-    auc_threshold: float = 0.60,
-    correction_method: str = "fdr_bh",
+    auc_threshold: float = 0.60
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str]]:
     """Filtruje cechy na podstawie istotności, wielkości efektu i AUC.
+
 
     Funkcja:
     1. Wykonuje korektę wielokrotnego testowania dla kolumny `p_value`,
@@ -479,24 +429,8 @@ def filter_features_by_statistics(
         ... )
         >>> print(keep_feats[:10])
     """
-    required_result_cols = {"feature", "p_value", "effect_size", "auc_sep"}
-    missing_result_cols = required_result_cols - set(results_df.columns)
-    if missing_result_cols:
-        raise ValueError(f"Brakuje kolumn w results_df: {sorted(missing_result_cols)}")
-
-    required_feature_cols = {id_col, class_col}
-    missing_feature_cols = required_feature_cols - set(features_df.columns)
-    if missing_feature_cols:
-        raise ValueError(f"Brakuje kolumn w features_df: {sorted(missing_feature_cols)}")
 
     results_df = results_df.copy()
-
-    # Korekta wielokrotnego testowania, jeśli p_adj nie zostało jeszcze policzone.
-    if "p_adj" not in results_df.columns:
-        results_df["p_adj"] = multipletests(
-            results_df["p_value"],
-            method=correction_method,
-        )[1]
 
     # Sortowanie: najpierw po istotności, potem po sile separacji.
     results_df = results_df.sort_values(
@@ -520,7 +454,7 @@ def filter_features_by_statistics(
 
     return features_df_filtered, keep_df, keep_feats, drop_feats
 
-
+# RYSOWANIE WYKRESÓW
 def draw_plot(df: pd.DataFrame, channel: str) -> None:
     """Rysuje dwa wykresy porównujące rozkład cechy między klasami.
 
@@ -587,7 +521,7 @@ def draw_plot(df: pd.DataFrame, channel: str) -> None:
         Patch(facecolor=palette[1], label="ADHD"),
     ]
 
-    fig.legend(handles=handles, title="Klasa", loc="upper center", ncol=2)
+    fig.legend(handles=handles, title="Klasa", loc="lower center", ncol=2)
 
     # Dodanie wspólnego tytułu dla całej figury.
     fig.suptitle(f"Porównanie rozkładu cechy {channel}", fontsize=14)
@@ -595,3 +529,108 @@ def draw_plot(df: pd.DataFrame, channel: str) -> None:
     # Dopasowanie układu z miejscem na tytuł i legendę.
     plt.tight_layout(rect=[0, 0, 1, 0.88])
     plt.show()
+
+# USUNIĘCIE WYSOKO SKORELOWANYCH CECH
+def drop_highly_correlated_features(
+    features_df: pd.DataFrame,
+    corr_threshold: float = 0.75,
+    id_col: str = "ID",
+    target_col: str = "Class",
+) -> pd.DataFrame:
+    """Usuwa silnie skorelowane cechy, zachowując lepszą z każdej pary.
+
+    Dla każdej cechy funkcja wewnętrznie liczy:
+    - p-value z testu Mann-Whitneya między dwiema klasami,
+    - skorygowane p-value (Benjamini-Hochberg),
+    - AUC separacji dla pojedynczej cechy.
+
+    Jeśli dwie cechy są silnie skorelowane (|rho Spearmana| > corr_threshold),
+    funkcja zostawia tę o niższym p_adj, a przy remisie tę o wyższym auc_sep.
+
+    Args:
+        features_df: DataFrame zawierający kolumny z cechami oraz kolumny
+            identyfikacyjne/docelowe.
+        corr_threshold: Próg korelacji bezwzględnej Spearmana.
+        id_col: Nazwa kolumny identyfikatora.
+        target_col: Nazwa kolumny zmiennej docelowej.
+
+    Returns:
+        DataFrame po usunięciu nadmiarowych, silnie skorelowanych cech.
+
+    """
+
+    # Wybór samych cech numerycznych
+    num_df = features_df.drop(columns=[id_col, target_col]).copy()
+
+
+    classes = features_df[target_col].dropna().unique()
+
+    class_0, class_1 = classes
+
+    # Dane rozdzielone wg klas
+    df_0 = features_df[features_df[target_col] == class_0]
+    df_1 = features_df[features_df[target_col] == class_1]
+
+    # Liczenie jakości cech
+    quality_rows = []
+
+    # Zamiana klas na 0/1 do AUC
+    y_true = (features_df[target_col] == class_1).astype(int)
+
+    for feature in num_df.columns:
+        x0 = df_0[feature].dropna()
+        x1 = df_1[feature].dropna()
+
+        # p-value z testu Mann-Whitneya
+        _, p_value = mannwhitneyu(x0, x1, alternative="two-sided")
+
+        # AUC dla pojedynczej cechy
+        values = features_df[feature]
+        auc = roc_auc_score(y_true, values)
+
+        # Jeżeli AUC < 0.5, odwracamy interpretację
+        auc_sep = max(auc, 1 - auc)
+
+        quality_rows.append({
+            "feature": feature,
+            "p_value": p_value,
+            "auc_sep": auc_sep,
+        })
+
+    quality_df = pd.DataFrame(quality_rows)
+
+    # Korekta wielokrotnych testów
+    quality_df["p_adj"] = multipletests(quality_df["p_value"], method="fdr_bh")[1]
+
+    # Ranking jakości cech
+    feature_quality = quality_df.set_index("feature")[["p_adj", "auc_sep"]]
+
+    # Macierz korelacji
+    corr = num_df.corr(method="spearman").abs()
+
+    to_drop = set()
+    cols = corr.columns.tolist()
+
+    # Porównywanie par cech
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            f1, f2 = cols[i], cols[j]
+
+            if corr.loc[f1, f2] > corr_threshold:
+                q1 = feature_quality.loc[f1]
+                q2 = feature_quality.loc[f2]
+
+                # Zostaw lepszą cechę
+                if (q1["p_adj"] < q2["p_adj"]) or (
+                    q1["p_adj"] == q2["p_adj"] and q1["auc_sep"] >= q2["auc_sep"]
+                ):
+                    to_drop.add(f2)
+                else:
+                    to_drop.add(f1)
+
+    print(f"Usuwam {len(to_drop)} cech przez wysoką korelację")
+
+    filtered_df = features_df.drop(columns=list(to_drop)).copy()
+    print(f"Nowy wymiar danych: {filtered_df.shape}")
+
+    return filtered_df
