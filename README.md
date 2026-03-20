@@ -29,7 +29,7 @@ Sklonuj repo
 
  ```{bash}
 
-git clone <link-do-repozytorium>
+git clone https://github.com/NoMoreCookies/NeuronZadanie.git
 cd NeuronZadanieRekrutacyjne
 
  ```
